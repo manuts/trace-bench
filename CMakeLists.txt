@@ -13,18 +13,13 @@ find_package(Threads REQUIRED)
 
 option(WITH_PERFETTO "Build the Perfetto-instrumented variant" ON)
 option(WITH_TRACY    "Build the Tracy-instrumented variant"    ON)
-# Tracy on-demand profiling. OFF (default) = Tracy collects from the first zone
-# whether or not a client is connected, so the producer hot path is always
-# measured (the fair comparison vs Perfetto's always-on session). ON = Tracy
-# short-circuits the zone macros until a profiler connects; with no client this
-# measures Tracy's "compiled-in but idle" cost (comparable to Perfetto with the
-# category disabled), NOT its live serialization cost.
-option(TRACY_ON_DEMAND "Build Tracy with on-demand profiling" OFF)
-# Replicate the aqua DU production Tracy configuration ("lowest overhead"):
-# on-demand + every background feature disabled + low-res timer fallback. Use
-# this to measure the overhead Tracy actually incurs in the DU, rather than a
-# default Tracy build. Overrides the standalone TRACY_ON_DEMAND option.
-option(TRACY_DU_PROFILE "Build Tracy exactly as the aqua DU does" OFF)
+# By DEFAULT Tracy is built exactly as the aqua DU production target does:
+# on-demand + every background feature disabled + low-res timer fallback (the
+# "lowest overhead" config whose cost we actually care about). Set
+# TRACY_LIVE=ON to instead build a full default Tracy (on-demand off, all
+# features on) -- the heavier path that always exercises the producer hot loop,
+# i.e. the "fair comparison" point against Perfetto's always-on session.
+option(TRACY_LIVE "Build full live Tracy instead of the default aqua-DU config" OFF)
 # Path to a wolfpld/tracy checkout (must contain public/TracyClient.cpp).
 # Defaults to the bundled submodule at third_party/tracy; override with
 # -DTRACY_SOURCE_DIR=/some/other/tracy to use an external checkout.
@@ -70,9 +65,15 @@ if(WITH_TRACY AND TRACY_SOURCE_DIR)
     # Turn the client on (default is OFF).
     set(TRACY_ENABLE ON CACHE BOOL "" FORCE)
     set(TRACY_STATIC ON CACHE BOOL "" FORCE)
-    if(TRACY_DU_PROFILE)
-      # Exact replica of the aqua DU production Tracy config ("lowest overhead").
-      # Keep this block in sync with the DU's External/tracy setup.
+    if(TRACY_LIVE)
+      # Full default Tracy: on-demand off, all features on, so the producer hot
+      # path is exercised from the first zone whether or not a client connects.
+      set(TRACY_ON_DEMAND OFF CACHE BOOL "" FORCE)
+      message(STATUS "trace-bench: Tracy built in full live mode (TRACY_LIVE=ON)")
+    else()
+      # DEFAULT: exact replica of the aqua DU production Tracy config
+      # ("lowest overhead"). Keep this block in sync with the DU's
+      # External/tracy setup.
       set(TRACY_ON_DEMAND            ON  CACHE BOOL "" FORCE)
       set(TRACY_NO_CALLSTACK         OFF CACHE BOOL "" FORCE)
       set(TRACY_NO_CALLSTACK_INLINES OFF CACHE BOOL "" FORCE)
@@ -84,12 +85,7 @@ if(WITH_TRACY AND TRACY_SOURCE_DIR)
       set(TRACY_NO_SYSTEM_TRACING    ON  CACHE BOOL "" FORCE)
       set(TRACY_NO_CRASH_HANDLER     ON  CACHE BOOL "" FORCE)
       set(TRACY_TIMER_FALLBACK       ON  CACHE BOOL "" FORCE)
-      message(STATUS "trace-bench: Tracy built with aqua DU production profile (on-demand, lowest overhead)")
-    else()
-      # TRACY_ON_DEMAND forwarded from our project option (default OFF ->
-      # producer path always exercised); Tracy's set_option() honours the
-      # pre-set cache value.
-      set(TRACY_ON_DEMAND ${TRACY_ON_DEMAND} CACHE BOOL "" FORCE)
+      message(STATUS "trace-bench: Tracy built with aqua DU production profile (default)")
     endif()
     add_subdirectory(${TRACY_SOURCE_DIR} ${CMAKE_BINARY_DIR}/tracy-build)
 

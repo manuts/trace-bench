@@ -64,15 +64,21 @@ per-event hot path does more work than Tracy's, by design:
 Those costs buy Perfetto things Tracy doesn't do (system-wide traces, SQL,
 cross-process, one format everywhere). This harness quantifies the price.
 
-**Fairness guards baked in** (so the comparison isn't accidentally rigged):
+**Defaults reflect production configs, not a symmetric comparison.** Out of the
+box each tool is built/run the way it actually ships:
 
 * Only **string literals** as event names → both tools hit their static-name
   fast path (dynamic names would unfairly tax Perfetto's interner).
-* Perfetto uses the **in-process backend**, not the `traced` system socket
-  (the lighter, profiler-style path, comparable to Tracy).
-* Tracy is built **without `TRACY_ON_DEMAND`** so its producer path is always
-  exercised (on-demand would short-circuit to ~0 with no client and mislead).
+* Perfetto uses the **system backend** (`traced` socket) by default — the
+  system-wide capture regime. Pass `--perfetto-backend inprocess` for the
+  lighter, profiler-style path that's directly comparable to Tracy.
+* Tracy is built with the **aqua DU production profile** by default (on-demand,
+  lowest overhead), so with no client connected it short-circuits. Build with
+  `-DTRACY_LIVE=ON` for the full producer path (always exercised, all features).
 * A discarded **warmup** run pays one-time process/icache costs.
+
+For the *symmetric* "both tools fully operational, lightest path" comparison,
+use `-DTRACY_LIVE=ON` together with `--perfetto-backend inprocess`.
 
 ---
 
@@ -133,70 +139,66 @@ To use a Tracy checkout elsewhere, pass `-DTRACY_SOURCE_DIR=/path/to/tracy`.
 | `WITH_PERFETTO` | ON | build `bench_perfetto` |
 | `WITH_TRACY` | ON | build `bench_tracy` |
 | `TRACY_SOURCE_DIR` | `third_party/tracy` | Tracy checkout (default: the submodule) |
-| `TRACY_ON_DEMAND` | OFF | build Tracy with on-demand profiling (see below) |
-| `TRACY_DU_PROFILE` | OFF | build Tracy exactly as the aqua DU does (see below) |
+| `TRACY_LIVE` | OFF | build full live Tracy instead of the default aqua-DU profile |
 
-**`TRACY_ON_DEMAND`** gives you a third data point. Build a separate tree with
-it ON and compare against the default:
+> The Perfetto backend is **not** a build option — it's chosen at run time with
+> `--perfetto-backend system|inprocess` (default `system`), so a single binary
+> covers both. See [Run](#run).
 
-```bash
-cmake -S . -B build-ondemand -DCMAKE_BUILD_TYPE=Release -DTRACY_ON_DEMAND=ON
-cmake --build build-ondemand -j
-```
+### Tracy build profile (`TRACY_LIVE`)
 
-* **OFF (default):** Tracy serializes every zone from program start regardless
-  of whether a client is connected — the **live producer cost**, the fair
-  comparison vs Perfetto's always-on session.
-* **ON, with no client connected:** the zone macros short-circuit — this
-  measures Tracy's **compiled-in-but-idle** cost, the right comparison against
-  Perfetto with its category *disabled*. Illustrative (1 thread, work=0):
-  `none ≈ 0.2`, `on-demand ON ≈ 2`, `on-demand OFF ≈ 8`, `perfetto ≈ 97` ns/event.
+By **default** `bench_tracy` is built exactly as the aqua DU production target
+compiles Tracy — on-demand + every background feature off + low-res timer
+fallback ("lowest overhead"). That's the config whose cost actually ships, so
+it's what the benchmark measures unless you ask otherwise.
 
-### The aqua DU profile (`TRACY_DU_PROFILE`)
-
-The aqua DU compiles Tracy in an on-demand, "lowest overhead" configuration
-(on-demand + every background feature off + low-res timer fallback).
-`-DTRACY_DU_PROFILE=ON` replicates that flag set exactly, so the benchmark
-measures the overhead Tracy *actually* incurs in the DU rather than a default
-build:
+`-DTRACY_LIVE=ON` instead builds a **full default Tracy** (on-demand off, all
+features on), which serializes every zone from program start whether or not a
+client is connected — the heavier producer path, and the right thing to compare
+against an enabled Perfetto session:
 
 ```bash
-cmake -S . -B build-du -DCMAKE_BUILD_TYPE=Release \
-      -DTRACY_SOURCE_DIR=/path/to/tracy -DTRACY_DU_PROFILE=ON
-cmake --build build-du -j
+cmake -S . -B build-live -DCMAKE_BUILD_TYPE=Release -DTRACY_LIVE=ON
+cmake --build build-live -j
 ```
 
-It forces: `TRACY_ON_DEMAND`, `TRACY_NO_CONTEXT_SWITCH`, `TRACY_NO_EXIT`,
-`TRACY_NO_SAMPLING`, `TRACY_NO_VSYNC_CAPTURE`, `TRACY_NO_FRAME_IMAGE`,
-`TRACY_NO_SYSTEM_TRACING`, `TRACY_NO_CRASH_HANDLER`, `TRACY_TIMER_FALLBACK` ON,
-and leaves callstack support available. Keep this block in sync with the DU's
-`External/tracy` setup. It overrides the standalone `TRACY_ON_DEMAND` option.
+The default profile forces `TRACY_ON_DEMAND`, `TRACY_NO_CONTEXT_SWITCH`,
+`TRACY_NO_EXIT`, `TRACY_NO_SAMPLING`, `TRACY_NO_VSYNC_CAPTURE`,
+`TRACY_NO_FRAME_IMAGE`, `TRACY_NO_SYSTEM_TRACING`, `TRACY_NO_CRASH_HANDLER`,
+`TRACY_TIMER_FALLBACK` ON, and leaves callstack support available. Keep that
+block in `CMakeLists.txt` in sync with the DU's `External/tracy` setup.
 
-Because the DU runs **on-demand**, there are two regimes worth measuring:
+Because the default profile runs **on-demand**, there are two regimes worth
+measuring:
 
 | Regime | How to run | What it tells you |
 |---|---|---|
-| **Idle** (no profiler attached) | `build-du/bench_tracy` standalone | what the DU pays ~all the time: ~1–3 ns/event (just the short-circuit check) |
+| **Idle** (no profiler attached) | `build/bench_tracy` standalone | what the DU pays ~all the time: ~1–3 ns/event (just the short-circuit check) |
 | **Active** (profiler attached) | run with `--tracy-capture` | full producer cost during a live session |
 
-The fair Perfetto comparison is therefore: **idle DU-Tracy vs category-disabled
-Perfetto**, and **active DU-Tracy vs enabled Perfetto**.
+So the comparisons are: **idle default-Tracy vs system/category-disabled
+Perfetto**, and **`TRACY_LIVE` Tracy vs in-process enabled Perfetto**.
 
 > **`TRACY_NO_EXIT` is safe here.** That flag makes the client block at exit
 > until a server drains it — but in on-demand mode with no client, no session is
 > active, so there is nothing to flush and the process exits cleanly. Verified:
-> a standalone `build-du/bench_tracy` run returns immediately (exit 0), it does
+> a standalone `build/bench_tracy` run returns immediately (exit 0), it does
 > not hang. (If you attach a client mid-run, exit *will* wait for the drain.)
 
 Illustrative medians (M-series macOS, unpinned, 1M events/thread):
 
 ```
-                          1 thread, work=0      4 threads, work=0
-none baseline                 ~0.2 ns               ~0.06 ns
-tracy DU-profile (idle)       ~1.7 ns/ev            ~0.8 ns/ev   <- the DU's normal cost
-tracy default  (live)         ~8.2 ns/ev            ~2.7 ns/ev
-perfetto (in-process)        ~99.7 ns/ev wall      ~29.9 ns/ev wall  (~122 ns cpu)
+                              1 thread, work=0      4 threads, work=0
+none baseline                     ~0.2 ns               ~0.06 ns
+tracy default (DU, idle)          ~1.7 ns/ev            ~0.8 ns/ev   <- the DU's normal cost
+tracy TRACY_LIVE (live)           ~8.2 ns/ev            ~2.7 ns/ev
+perfetto --perfetto-backend inprocess  ~99.7 ns/ev wall  ~29.9 ns/ev wall  (~122 ns cpu)
 ```
+
+> Note the headline numbers above were taken with Perfetto **in-process**. With
+> the default **system** backend the producer hot path is similar, but the
+> serialize/drain cost moves into `traced`, so this process's CPU column drops
+> (see Caveats).
 
 > If you push this to GitLab, add Tracy as a git submodule and set
 > `TRACY_SOURCE_DIR` to it, or keep passing a local path. Tracy ≥ 0.13 is fine.
@@ -213,7 +215,18 @@ build/bench_perfetto --threads 4 --events 1000000 --work 0
 ```
 
 Flags: `--threads`, `--events` (per thread), `--work` (xorshift rounds/region),
-`--counters`, `--no-warmup`, `--no-pin`, `--buffer-kb`, `--trace-file`.
+`--counters`, `--no-warmup`, `--no-pin`, `--buffer-kb`,
+`--perfetto-backend system|inprocess` (default `system`), `--trace-file`.
+
+> The **system** backend talks to the `traced` daemon. If `traced` is **not**
+> running (e.g. a stock macOS box), the run does **not** hang or error — the
+> consumer connection fails fast, the process exits cleanly, and you get a
+> **0-byte trace** with a misleadingly-low ~1 ns/event (that's just the
+> not-connected gating check in the TrackEvent macro, *not* real overhead).
+> Treat a suspiciously-cheap system-backend number as "no daemon connected".
+> For self-contained measurement use `--perfetto-backend inprocess`, which needs
+> nothing external. To exercise the real system path, start `traced` first
+> (`traced &` on Linux, or run under `tracebox`).
 
 ### The full sweep (recommended)
 
@@ -239,6 +252,77 @@ Reading it: at `threads=1, work=0`, Perfetto adds ~98 ns/event vs Tracy's ~15
 counts and includes each tool's drain thread. As `--work` grows, both shrink as
 a *fraction* of the region — the practical takeaway for where instrumentation
 stops mattering.
+
+---
+
+## Five-way comparison (`scripts/compare5.sh`)
+
+The headline experiment: how much does instrumentation cost the **application
+under test**, idle vs actively captured, for each tool? Five runs:
+
+1. no profiling (`bench_none`)
+2. perfetto enabled, **no consumer** — compiled in but nothing recording
+3. perfetto enabled, **with consumer** — `traced` + a `perfetto` consumer capturing
+4. tracy enabled, **no capture** — on-demand DU build, idle
+5. tracy enabled, **with capture** — `tracy-capture` attached
+
+This mirrors the Pharos/L1 topology: `bench_perfetto --perfetto-backend system`
+is a **producer only** (like L1 with `perfettoSystemBackend=true`); an external
+`perfetto` consumer owns the session and writes the file, so the consumer's
+serialize/drain cost is *not* charged to the app's `RUSAGE`.
+
+**Prerequisites**
+
+* Only **case 3** needs the `traced` daemon + a `perfetto` consumer. Easiest is
+  the prebuilt multitool (no source build):
+  ```bash
+  curl -LO https://get.perfetto.dev/tracebox && chmod +x tracebox
+  ```
+  Or build from source for separate `traced`/`perfetto` binaries
+  (<https://perfetto.dev/docs/quickstart/linux-tracing>):
+  ```bash
+  tools/install-build-deps
+  tools/gn gen out/linux --args='is_debug=false'
+  tools/ninja -C out/linux tracebox traced perfetto
+  ```
+  Keep Perfetto roughly **version-aligned** with the vendored SDK (`perfetto.cc`
+  reports `PERFETTO_VERSION_STRING`, currently v57; IPC is compatible across
+  nearby versions). If they drift, regenerate the SDK from your checkout:
+  `tools/gen_amalgamated --sdk cpp --output <repo>/third_party/perfetto/perfetto`.
+* A `tracy-capture` whose **protocol version matches** the Tracy submodule
+  (this repo pins `third_party/tracy` to **v0.13.1**; use a 0.13.1 capture).
+
+**Run** (needs a real shell — `traced`/Tracy capture bind sockets a sandbox blocks).
+Point at the Perfetto binaries with **`TRACEBOX=`** (single prebuilt binary) or
+**`PD=`** (a build dir with separate `traced`/`perfetto`):
+```bash
+TRACEBOX=./tracebox bash scripts/compare5.sh           # prebuilt multitool
+PD=~/devel/perfetto/out/linux bash scripts/compare5.sh # or a source build dir
+# knobs: REPS=11 EVENTS=200000 THREADS=1 WORK=0 CAPTURE=tracy-capture
+```
+`WORK` is xorshift rounds per region (~1.33 ns each, so `WORK=7500` ≈ 10 µs/region
+for a realistic "instrument a chunky region" scenario; `WORK=0` isolates pure
+per-event overhead). The script prints, per case, min/median wall and CPU
+ns/event; overhead = case − case 1.
+
+**Illustrative result** (Apple M-series, macOS, unpinned, 1 thread, work=0 —
+ordering is the point, not the absolute figures):
+
+| # | scenario | wall ns/ev | app overhead | cpu ns/ev |
+|---|---|--:|--:|--:|
+| 1 | none | 0.20 | — | 0.21 |
+| 2 | perfetto, no consumer | 0.82 | +0.6 | 0.86 |
+| 3 | perfetto, capturing | 102.6 | **+102** | 129.3 |
+| 4 | tracy, no capture | 1.58 | +1.4 | 2.20 |
+| 5 | tracy, capturing | 33.5 | **+33** | 48.8 |
+
+Takeaways: compiled-in-but-idle is ~1 ns either way; while **actively
+capturing, Tracy costs the app ~3× less** than Perfetto (~33 vs ~102 ns/event
+hot-path). `cpu > wall` is the backend's in-process background thread (Perfetto's
+muxer shipping to `traced`, Tracy's net-send thread) — real, and charged to the
+app. At `WORK=7500` (~10 µs/region) these overheads are a sub-1% share and the
+difference method gets noisy; instrument regions ≥ ~1 µs (Perfetto) / ~300 ns
+(Tracy) for the cost to stay negligible.
 
 ---
 
@@ -304,10 +388,16 @@ without cross-thread contention.
 
 ## Caveats
 
-* The two tools are **not perfectly symmetric**: Perfetto writes a file
-  in-process; Tracy streams to a client. Both represent "tool fully operational"
-  but the I/O paths differ — the producer hot path (the headline metric) is the
-  comparable part.
+* The two tools are **not perfectly symmetric**: Perfetto routes events to a
+  service (the `traced` daemon by default, or an in-process service with
+  `--perfetto-backend inprocess`); Tracy streams to a client. Both represent
+  "tool fully operational" but the I/O paths differ — the producer hot path (the
+  headline metric) is the comparable part.
+* **The system backend moves cost off this process.** With the default
+  `--perfetto-backend system`, serialization/drain happens inside `traced`, so
+  `RUSAGE_SELF` (the CPU column) understates the real work — it looks cheaper
+  than it is. Use `--perfetto-backend inprocess` to keep all cost in-process and
+  visible to `getrusage`.
 * `maxrss` units differ by OS (bytes on macOS, KiB on Linux).
 * `trace_bytes` includes warmup events unless you pass `--no-warmup`.
 * Results are sensitive to compiler, flags, and machine — always publish the config.

@@ -2,8 +2,9 @@
 //
 // Tracing session lifecycle, abstracted across backends.
 //
-//   start() -> begin recording (Perfetto: init + in-process session;
-//              Tracy: no-op, it self-starts; none: no-op)
+//   start() -> begin recording (Perfetto: init + session on the chosen backend
+//              -- system `traced` socket or in-process; Tracy: no-op, it
+//              self-starts; none: no-op)
 //   stop()  -> flush + (Perfetto) write the trace file and record its size
 //
 // Only the parallel work region between start() and stop() is timed by the
@@ -16,7 +17,9 @@ namespace bench {
 
 class TraceBackend {
  public:
-  void start(const std::string& file, int buffer_kb);
+  // system_backend selects the Perfetto backend at run time: true = system
+  // (`traced` socket), false = in-process. Ignored by the Tracy/none backends.
+  void start(const std::string& file, int buffer_kb, bool system_backend);
   void stop();
   std::size_t trace_bytes() const { return trace_bytes_; }
 

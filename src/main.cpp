@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -85,6 +86,9 @@ void usage() {
       "  --no-warmup        skip the discarded warmup run\n"
       "  --no-pin           do not pin worker threads to cores\n"
       "  --buffer-kb N      Perfetto ring buffer size (default 262144)\n"
+      "  --perfetto-backend system|inprocess  Perfetto backend (default system)\n"
+      "  --wait-client [S]  (Tracy) wait up to S s (default 10) for a capture client\n"
+      "                     to attach before timing -- makes on-demand runs deterministic\n"
       "  --trace-file PATH  output trace path         (default trace_bench.pftrace)\n"
       "\nPrints one CSV row:\n"
       "  backend,threads,events_per_thread,work_iters,counters,total_events,"
@@ -106,7 +110,21 @@ int main(int argc, char** argv) {
     else if (a == "--no-warmup")  c.warmup     = false;
     else if (a == "--no-pin")     c.pin        = false;
     else if (a == "--buffer-kb")  c.buffer_kb  = std::stoi(next());
+    else if (a == "--perfetto-backend") {
+      std::string b = next();
+      if      (b == "system")    c.perfetto_system = true;
+      else if (b == "inprocess") c.perfetto_system = false;
+      else { std::fprintf(stderr, "--perfetto-backend must be 'system' or 'inprocess'\n"); return 2; }
+    }
     else if (a == "--trace-file") c.trace_file = next();
+    else if (a == "--wait-client") {
+      c.wait_client_sec = 10.0;  // default timeout
+      if (i + 1 < argc) {        // optional explicit timeout (seconds)
+        char* end = nullptr;
+        double v = std::strtod(argv[i + 1], &end);
+        if (end && *end == '\0') { c.wait_client_sec = v; ++i; }
+      }
+    }
     else if (a == "--help")       { usage(); return 0; }
     else { std::fprintf(stderr, "unknown arg: %s (try --help)\n", a.c_str()); return 2; }
   }
@@ -114,7 +132,7 @@ int main(int argc, char** argv) {
   std::vector<Sink> sinks(c.threads);
 
   TraceBackend backend;
-  backend.start(c.trace_file, c.buffer_kb);
+  backend.start(c.trace_file, c.buffer_kb, c.perfetto_system);
 
   // Warmup pays one-time process-level costs (session bring-up, icache, first
   // allocations) before the measured run. Per-thread TLS init is not warmed
@@ -126,6 +144,18 @@ int main(int argc, char** argv) {
     uint64_t junk = 0;
     volatile uint64_t s = run_once(w, sinks, &junk);
     (void)s;
+  }
+
+  // Optionally block until a capture client attaches (Tracy on-demand), so the
+  // whole timed region below is collected -- otherwise a short run races the
+  // connection. No-op for perfetto/none.
+  if (c.wait_client_sec > 0) {
+    bool ok = bench_wait_for_client(c.wait_client_sec);
+    if (!ok)
+      std::fprintf(stderr,
+                   "warning: no capture client connected within %.1fs; "
+                   "measuring without one\n",
+                   c.wait_client_sec);
   }
 
   CpuTimes cpu0 = cpu_times();

@@ -52,3 +52,32 @@
   #define BENCH_TRACE_COUNTER(lit, val) ((void)0)
   #define BENCH_SET_THREAD_NAME(name)   ((void)(name))
 #endif
+
+// Wait (up to timeout_s) until tracing is actually active before the timed
+// region, so the whole run is collected instead of racing the connection:
+//   Tracy    -- until a capture client connects (on-demand DU build).
+//   Perfetto -- until the "bench" category is enabled by a session (i.e. an
+//               external consumer is recording, the producer-only/system case).
+// Returns true once active, false on timeout. No-op (false) for none.
+#include <chrono>
+#include <thread>
+inline bool bench_wait_for_client(double timeout_s) {
+#if BENCH_BACKEND == BENCH_BACKEND_NONE
+  (void)timeout_s;
+  return false;
+#else
+  const auto deadline =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(timeout_s));
+  for (;;) {
+  #if BENCH_BACKEND == BENCH_BACKEND_TRACY
+    if (TracyIsConnected) return true;
+  #else  // BENCH_BACKEND_PERFETTO
+    if (TRACE_EVENT_CATEGORY_ENABLED("bench")) return true;
+  #endif
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+#endif
+}
