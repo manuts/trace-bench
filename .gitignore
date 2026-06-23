@@ -1,0 +1,20 @@
+# Build output
+build/
+build-*/
+*.o
+*.a
+
+# Traces
+*.pftrace
+*.ptrace
+*.perfetto-trace
+*.tracy
+
+# Results
+*.csv
+!scripts/**/*.csv
+
+# Editor / OS
+.DS_Store
+.vscode/
+compile_commands.json
