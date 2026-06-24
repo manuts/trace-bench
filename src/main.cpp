@@ -180,5 +180,13 @@ int main(int argc, char** argv) {
               static_cast<unsigned long long>(cpu1.sys_ns - cpu0.sys_ns),
               cpu1.maxrss, backend.trace_bytes(), ns_per_event,
               static_cast<unsigned long long>(checksum & 0xffffffffull));
-  return 0;
+
+  // Hard-exit after the result is out. The Tracy DU profile sets TRACY_NO_EXIT,
+  // which blocks at normal process exit until a profiler connects and drains --
+  // fine for the long-running DU, but it hangs this short-lived benchmark on
+  // Linux (and is pointless here: we don't need the trace, only the timing,
+  // which is already measured and printed). NO_EXIT is exit-only and does not
+  // affect the per-event overhead, so bypassing it changes no measurement.
+  std::fflush(stdout);
+  std::_Exit(0);
 }

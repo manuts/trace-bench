@@ -179,11 +179,14 @@ measuring:
 So the comparisons are: **idle default-Tracy vs system/category-disabled
 Perfetto**, and **`TRACY_LIVE` Tracy vs in-process enabled Perfetto**.
 
-> **`TRACY_NO_EXIT` is safe here.** That flag makes the client block at exit
-> until a server drains it — but in on-demand mode with no client, no session is
-> active, so there is nothing to flush and the process exits cleanly. Verified:
-> a standalone `build/bench_tracy` run returns immediately (exit 0), it does
-> not hang. (If you attach a client mid-run, exit *will* wait for the drain.)
+> **`TRACY_NO_EXIT` and short runs.** This flag makes the Tracy client block at
+> process exit until a profiler connects and drains — intended so short programs
+> don't lose data. On macOS a standalone idle `bench_tracy` happened to exit
+> anyway, but on Linux it does what the flag says and **hangs at exit**. Since
+> the benchmark only needs the timing (already printed) and not the trace,
+> `main()` does `fflush(stdout); _Exit(0)` right after emitting the CSV, which
+> bypasses the atexit handler. `NO_EXIT` is exit-only and has no effect on the
+> measured per-event overhead, so this changes no numbers.
 
 Illustrative medians (M-series macOS, unpinned, 1M events/thread):
 
@@ -286,9 +289,15 @@ serialize/drain cost is *not* charged to the app's `RUSAGE`.
   tools/ninja -C out/linux tracebox traced perfetto
   ```
   Keep Perfetto roughly **version-aligned** with the vendored SDK (`perfetto.cc`
-  reports `PERFETTO_VERSION_STRING`, currently v57; IPC is compatible across
-  nearby versions). If they drift, regenerate the SDK from your checkout:
-  `tools/gen_amalgamated --sdk cpp --output <repo>/third_party/perfetto/perfetto`.
+  reports `PERFETTO_VERSION_STRING`; IPC is compatible across nearby versions).
+  To refresh the vendored copy, use Perfetto's **released, portable** SDK zip:
+  ```bash
+  bash scripts/fetch_perfetto_sdk.sh          # latest; or PERFETTO_VERSION=v57.0
+  ```
+  Do **not** vendor a locally `gen_amalgamated`-generated SDK: that bakes in only
+  the *host* OS's system includes (e.g. a macOS-generated `perfetto.cc` omits
+  `<linux/vm_sockets.h>` and won't compile on Linux). The released zip is
+  generated portably and builds on macOS and Linux alike.
 * A `tracy-capture` whose **protocol version matches** the Tracy submodule
   (this repo pins `third_party/tracy` to **v0.13.1**; use a 0.13.1 capture).
 

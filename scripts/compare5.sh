@@ -12,7 +12,7 @@
 # daemon and a Tracy capture, which bind unix/TCP sockets -- a sandbox blocks
 # that with EPERM.
 #
-# Overrides via env: TB, PD, CAPTURE, REPS, EVENTS, THREADS, WORK.
+# Overrides via env: TB, PD, CAPTURE, REPS, EVENTS, THREADS, WORK, NOPIN.
 set -u
 
 # Repo root: parent of this script's dir (portable). Override with TB=...
@@ -34,7 +34,10 @@ REPS="${REPS:-11}"
 EVENTS="${EVENTS:-200000}"
 THREADS="${THREADS:-1}"
 WORK="${WORK:-7500}"          # xorshift rounds/region; ~7500 ~= 10 us (~1.33 ns/iter)
-ARGS=(--threads "$THREADS" --events "$EVENTS" --work "$WORK" --no-pin)
+# Pin workers to cores by default (big jitter reducer on Linux; a no-op on macOS,
+# which has no hard-affinity API). Set NOPIN=1 to disable.
+ARGS=(--threads "$THREADS" --events "$EVENTS" --work "$WORK")
+[ -n "${NOPIN:-}" ] && ARGS+=(--no-pin)
 M="python3 $TB/scripts/measure.py"
 
 export PERFETTO_PRODUCER_SOCK_NAME=/tmp/pf-prod.sock
