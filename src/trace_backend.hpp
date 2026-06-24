@@ -18,8 +18,9 @@ namespace bench {
 class TraceBackend {
  public:
   // system_backend selects the Perfetto backend at run time: true = system
-  // (`traced` socket), false = in-process. Ignored by the Tracy/none backends.
-  void start(const std::string& file, int buffer_kb, bool system_backend);
+  // (`traced` socket), false = in-process. fast enables SMB/commit-batching
+  // tuning (applies to both backends). Both are ignored by Tracy/none.
+  void start(const std::string& file, int buffer_kb, bool system_backend, bool fast);
   void stop();
   std::size_t trace_bytes() const { return trace_bytes_; }
 

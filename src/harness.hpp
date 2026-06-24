@@ -20,6 +20,7 @@ struct Config {
   int      buffer_kb  = 256 * 1024;  // Perfetto ring buffer (other backends ignore)
   bool     pin        = true;        // pin workers to cores (Linux only)
   bool     perfetto_system = true;   // Perfetto backend: true=system (traced), false=in-process
+  bool     perfetto_fast   = false;  // Perfetto: apply SMB/commit-batching tuning (both backends)
   double   wait_client_sec = 0.0;    // >0: (Tracy) wait up to N s for a capture client before timing
   std::string trace_file = "trace_bench.pftrace";
 };

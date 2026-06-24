@@ -87,6 +87,7 @@ void usage() {
       "  --no-pin           do not pin worker threads to cores\n"
       "  --buffer-kb N      Perfetto ring buffer size (default 262144)\n"
       "  --perfetto-backend system|inprocess  Perfetto backend (default system)\n"
+      "  --perfetto-fast    Perfetto: enable SMB/commit-batching tuning (both backends)\n"
       "  --wait-client [S]  (Tracy) wait up to S s (default 10) for a capture client\n"
       "                     to attach before timing -- makes on-demand runs deterministic\n"
       "  --trace-file PATH  output trace path         (default trace_bench.pftrace)\n"
@@ -116,6 +117,7 @@ int main(int argc, char** argv) {
       else if (b == "inprocess") c.perfetto_system = false;
       else { std::fprintf(stderr, "--perfetto-backend must be 'system' or 'inprocess'\n"); return 2; }
     }
+    else if (a == "--perfetto-fast") c.perfetto_fast = true;
     else if (a == "--trace-file") c.trace_file = next();
     else if (a == "--wait-client") {
       c.wait_client_sec = 10.0;  // default timeout
@@ -132,7 +134,7 @@ int main(int argc, char** argv) {
   std::vector<Sink> sinks(c.threads);
 
   TraceBackend backend;
-  backend.start(c.trace_file, c.buffer_kb, c.perfetto_system);
+  backend.start(c.trace_file, c.buffer_kb, c.perfetto_system, c.perfetto_fast);
 
   // Warmup pays one-time process-level costs (session bring-up, icache, first
   // allocations) before the measured run. Per-thread TLS init is not warmed

@@ -35,12 +35,24 @@ std::unique_ptr<perfetto::TracingSession> g_session;  // in-process only
 
 namespace bench {
 
-void TraceBackend::start(const std::string& file, int buffer_kb, bool system_backend) {
+void TraceBackend::start(const std::string& file, int buffer_kb, bool system_backend, bool fast) {
   file_ = file;
 
   perfetto::TracingInitArgs args;
   args.backends =
       system_backend ? perfetto::kSystemBackend : perfetto::kInProcessBackend;
+
+  if (fast) {
+    // Cut the producer->service cost. The SMB sits between the producer and the
+    // service in BOTH backends (in-process service thread, or the `traced`
+    // daemon over a socket), so these apply either way -- though the IPC saving
+    // is largest for the system backend.
+    args.shmem_size_hint_kb = 4096;            // larger SMB: absorb write bursts, less backpressure
+    args.shmem_page_size_hint_kb = 32;         // bigger chunks: fewer page handoffs
+    args.shmem_batch_commits_duration_ms = 2;  // batch commit notifications: fewer IPCs to traced
+    args.shmem_direct_patching_enabled = true; // patch chunk sizes in place (if service supports)
+  }
+
   perfetto::Tracing::Initialize(args);
   perfetto::TrackEvent::Register();
 
@@ -90,7 +102,7 @@ void TraceBackend::stop() {
 // connected over loopback while we run -- see README "Capturing a Tracy trace".
 // ----------------------------------------------------------------------------
 namespace bench {
-void TraceBackend::start(const std::string&, int, bool) {}
+void TraceBackend::start(const std::string&, int, bool, bool) {}
 void TraceBackend::stop() {}
 }  // namespace bench
 
@@ -99,7 +111,7 @@ void TraceBackend::stop() {}
 // none: baseline, nothing to do.
 // ----------------------------------------------------------------------------
 namespace bench {
-void TraceBackend::start(const std::string&, int, bool) {}
+void TraceBackend::start(const std::string&, int, bool, bool) {}
 void TraceBackend::stop() {}
 }  // namespace bench
 

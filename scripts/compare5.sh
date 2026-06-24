@@ -12,7 +12,7 @@
 # daemon and a Tracy capture, which bind unix/TCP sockets -- a sandbox blocks
 # that with EPERM.
 #
-# Overrides via env: TB, PD, CAPTURE, REPS, EVENTS, THREADS, WORK, NOPIN.
+# Overrides via env: TB, PD/TRACEBOX, CAPTURE, REPS, EVENTS, THREADS, WORK, NOPIN, PERFETTO_FAST.
 set -u
 
 # Repo root: parent of this script's dir (portable). Override with TB=...
@@ -38,6 +38,10 @@ WORK="${WORK:-7500}"          # xorshift rounds/region; ~7500 ~= 10 us (~1.33 ns
 # which has no hard-affinity API). Set NOPIN=1 to disable.
 ARGS=(--threads "$THREADS" --events "$EVENTS" --work "$WORK")
 [ -n "${NOPIN:-}" ] && ARGS+=(--no-pin)
+# PERFETTO_FAST=1 adds --perfetto-fast (SMB size + commit batching) to the
+# perfetto cases, for an easy A/B against the untuned numbers.
+PFAST=()
+[ -n "${PERFETTO_FAST:-}" ] && PFAST=(--perfetto-fast)
 M="python3 $TB/scripts/measure.py"
 
 export PERFETTO_PRODUCER_SOCK_NAME=/tmp/pf-prod.sock
@@ -58,7 +62,7 @@ $M "$REPS" "1. none (no profiling)    " -- "$TB/build-du/bench_none" "${ARGS[@]}
 
 # ---- 2. perfetto enabled, NO consumer --------------------------------------
 # No active session -> the "bench" category is disabled, macros short-circuit.
-$M "$REPS" "2. perfetto, no consumer  " -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system
+$M "$REPS" "2. perfetto, no consumer  " -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system "${PFAST[@]}"
 
 # ---- 3. perfetto enabled, WITH consumer ------------------------------------
 # traced + perfetto CLI hold one session active across all reps.
@@ -73,7 +77,7 @@ sleep 1.5
 if ! kill -0 "$PERF_PID" 2>/dev/null; then
   echo "  ERROR: perfetto consumer failed to start:"; sed 's/^/    /' /tmp/perfetto.log; exit 1
 fi
-$M "$REPS" "3. perfetto, with consumer" -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system --wait-client 15
+$M "$REPS" "3. perfetto, with consumer" -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system --wait-client 15 "${PFAST[@]}"
 kill "$PERF_PID"   2>/dev/null; wait "$PERF_PID"   2>/dev/null; PERF_PID=""
 kill "$TRACED_PID" 2>/dev/null; wait "$TRACED_PID" 2>/dev/null; TRACED_PID=""
 
