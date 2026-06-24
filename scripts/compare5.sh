@@ -12,7 +12,7 @@
 # daemon and a Tracy capture, which bind unix/TCP sockets -- a sandbox blocks
 # that with EPERM.
 #
-# Overrides via env: TB, PD/TRACEBOX, CAPTURE, REPS, EVENTS, THREADS, WORK, NOPIN, PERFETTO_FAST.
+# Overrides via env: TB, PD/TRACEBOX, CAPTURE, REPS, EVENTS, THREADS, WORK, NOPIN, PERFETTO_FAST, PERFETTO_BACKEND.
 set -u
 
 # Repo root: parent of this script's dir (portable). Override with TB=...
@@ -34,6 +34,11 @@ REPS="${REPS:-11}"
 EVENTS="${EVENTS:-200000}"
 THREADS="${THREADS:-1}"
 WORK="${WORK:-7500}"          # xorshift rounds/region; ~7500 ~= 10 us (~1.33 ns/iter)
+# Perfetto topology for the "capturing" case (3): "system" = Pharos producer-only
+# (needs traced + a perfetto consumer); "inprocess" = self-contained (no daemon,
+# but the consumer cost is paid in-process). Cases 1/2/4/5 are unaffected.
+PBACKEND="${PERFETTO_BACKEND:-system}"
+case "$PBACKEND" in system|inprocess) ;; *) echo "PERFETTO_BACKEND must be system|inprocess"; exit 2;; esac
 # Pin workers to cores by default (big jitter reducer on Linux; a no-op on macOS,
 # which has no hard-affinity API). Set NOPIN=1 to disable.
 ARGS=(--threads "$THREADS" --events "$EVENTS" --work "$WORK")
@@ -54,7 +59,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "trace-bench five-way comparison  (reps=$REPS, ${ARGS[*]})"
+echo "trace-bench five-way comparison  (reps=$REPS, ${ARGS[*]}, perfetto=$PBACKEND${PERFETTO_FAST:+ +fast})"
 echo "================================================================================"
 
 # ---- 1. no profiling -------------------------------------------------------
@@ -62,24 +67,33 @@ $M "$REPS" "1. none (no profiling)    " -- "$TB/build-du/bench_none" "${ARGS[@]}
 
 # ---- 2. perfetto enabled, NO consumer --------------------------------------
 # No active session -> the "bench" category is disabled, macros short-circuit.
-$M "$REPS" "2. perfetto, no consumer  " -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system "${PFAST[@]}"
+$M "$REPS" "2. perfetto, no consumer  " -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system ${PFAST[@]+"${PFAST[@]}"}
 
 # ---- 3. perfetto enabled, WITH consumer ------------------------------------
-# traced + perfetto CLI hold one session active across all reps.
-rm -f "$PERFETTO_PRODUCER_SOCK_NAME" "$PERFETTO_CONSUMER_SOCK_NAME"
-"${TRACED[@]}" >/tmp/traced.log 2>&1 & TRACED_PID=$!
-sleep 1.5
-if ! kill -0 "$TRACED_PID" 2>/dev/null; then
-  echo "  ERROR: traced failed to start:"; sed 's/^/    /' /tmp/traced.log; exit 1
+if [ "$PBACKEND" = inprocess ]; then
+  # In-process backend: the bench IS its own consumer (creates + drains the
+  # session in-process), so no traced/perfetto daemon is needed and it runs
+  # anywhere -- but the consumer cost is then paid in this process (an upper
+  # bound, not the Pharos producer-only number).
+  $M "$REPS" "3. perfetto, in-process   " -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend inprocess ${PFAST[@]+"${PFAST[@]}"}
+else
+  # System backend (Pharos topology): traced + perfetto CLI hold one session
+  # active across all reps; the bench is producer-only.
+  rm -f "$PERFETTO_PRODUCER_SOCK_NAME" "$PERFETTO_CONSUMER_SOCK_NAME"
+  "${TRACED[@]}" >/tmp/traced.log 2>&1 & TRACED_PID=$!
+  sleep 1.5
+  if ! kill -0 "$TRACED_PID" 2>/dev/null; then
+    echo "  ERROR: traced failed to start:"; sed 's/^/    /' /tmp/traced.log; exit 1
+  fi
+  "${PERFETTO[@]}" -c "$TB/scripts/perfetto_track_event.cfg" --txt -o /tmp/trace_out >/tmp/perfetto.log 2>&1 & PERF_PID=$!
+  sleep 1.5
+  if ! kill -0 "$PERF_PID" 2>/dev/null; then
+    echo "  ERROR: perfetto consumer failed to start:"; sed 's/^/    /' /tmp/perfetto.log; exit 1
+  fi
+  $M "$REPS" "3. perfetto, with consumer" -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system --wait-client 15 ${PFAST[@]+"${PFAST[@]}"}
+  kill "$PERF_PID"   2>/dev/null; wait "$PERF_PID"   2>/dev/null; PERF_PID=""
+  kill "$TRACED_PID" 2>/dev/null; wait "$TRACED_PID" 2>/dev/null; TRACED_PID=""
 fi
-"${PERFETTO[@]}" -c "$TB/scripts/perfetto_track_event.cfg" --txt -o /tmp/trace_out >/tmp/perfetto.log 2>&1 & PERF_PID=$!
-sleep 1.5
-if ! kill -0 "$PERF_PID" 2>/dev/null; then
-  echo "  ERROR: perfetto consumer failed to start:"; sed 's/^/    /' /tmp/perfetto.log; exit 1
-fi
-$M "$REPS" "3. perfetto, with consumer" -- "$TB/build-du/bench_perfetto" "${ARGS[@]}" --perfetto-backend system --wait-client 15 "${PFAST[@]}"
-kill "$PERF_PID"   2>/dev/null; wait "$PERF_PID"   2>/dev/null; PERF_PID=""
-kill "$TRACED_PID" 2>/dev/null; wait "$TRACED_PID" 2>/dev/null; TRACED_PID=""
 
 # ---- 4. tracy enabled, NO capture ------------------------------------------
 # DU build is on-demand: with no client the zone macros short-circuit.
